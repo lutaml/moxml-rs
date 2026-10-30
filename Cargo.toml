@@ -1,0 +1,13 @@
+[package]
+name = "moxml"
+version = "0.1.0"
+edition = "2021"
+description = "The moxml XML processing model — Rust implementation (model + harmonization layer over leptris-rs)"
+license = "MIT"
+repository = "https://github.com/lutaml/moxml-rs"
+homepage = "https://github.com/lutaml/moxml"
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"
