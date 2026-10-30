@@ -12,6 +12,7 @@
 //! Part 2 lexical spaces, mirrored from lutaml/moxml's
 //! `Moxml::XSD::BuiltinLexical` (#496/#498).
 
+pub mod entity_registry;
 pub mod lexical;
 pub mod wildcard;
 pub mod xsd_regex;

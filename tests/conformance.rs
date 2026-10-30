@@ -11,7 +11,7 @@ const DATASET: &str = include_str!("data/moxml-conformance.json");
 #[test]
 fn dataset_parses_and_carries_rows() {
     let data: serde_json::Value = serde_json::from_str(DATASET).expect("dataset parses");
-    assert_eq!(data["schema"], 2, "dataset schema version");
+    assert_eq!(data["schema"], 3, "dataset schema version");
     let rows = data["cases"]["builtin_lexical"]
         .as_array()
         .expect("builtin_lexical cases");
