@@ -8,6 +8,7 @@ repository = "https://github.com/lutaml/moxml-rs"
 homepage = "https://github.com/lutaml/moxml"
 
 [dependencies]
+regex = "1"
 
 [dev-dependencies]
 serde_json = "1"

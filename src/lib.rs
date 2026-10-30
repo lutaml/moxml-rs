@@ -13,3 +13,4 @@
 //! `Moxml::XSD::BuiltinLexical` (#496/#498).
 
 pub mod lexical;
+pub mod xsd_regex;
