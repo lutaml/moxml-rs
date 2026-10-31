@@ -32,19 +32,48 @@ pub fn translate(pattern: &str) -> Option<Regex> {
     Regex::new(&format!(r"\A(?:{translated})\z")).ok()
 }
 
+/// Translates an XSD pattern to the **JavaScript** RegExp dialect
+/// (compile the result with the `u` flag): `^`/`$` anchors (strict
+/// ends without the `m` flag) and the same block/category/escape
+/// translations as [`translate`] — every escape the subset emits
+/// (`\]`, `\u{...}`, `\p{...}`) is `/u`-legal. A raw `[` inside a
+/// class is refused: the dialect requires the escaped form, and JS
+/// offers no compile-time check to lean on. `None` on the same
+/// out-of-subset constructs as [`translate`].
+pub fn translate_to_js(pattern: &str) -> Option<String> {
+    let translated = scan(pattern)?;
+    Some(format!("^(?:{translated})$"))
+}
+
 fn scan(pattern: &str) -> Option<String> {
     let mut out = String::with_capacity(pattern.len() + 8);
     let mut index = 0usize;
+    let mut in_class = false;
     let chars: Vec<char> = pattern.chars().collect();
     while index < chars.len() {
         if chars[index] == '\\' {
+            // An escaped `]` is a literal class member — it does not
+            // close the class; only the raw `]` below does.
             index += escape(&chars, index, &mut out)?;
         } else {
             // Class subtraction is outside the translated subset.
             if chars[index] == '-' && chars.get(index + 1) == Some(&'[') {
                 return None;
             }
-            out.push(chars[index]);
+            match chars[index] {
+                ']' => {
+                    in_class = false;
+                    out.push(']');
+                }
+                '[' if in_class => {
+                    return None;
+                }
+                '[' => {
+                    in_class = true;
+                    out.push('[');
+                }
+                c => out.push(c),
+            }
             index += 1;
         }
     }
@@ -74,7 +103,7 @@ fn escape(chars: &[char], index: usize, out: &mut String) -> Option<usize> {
                 if kind == 'P' {
                     out.push('^');
                 }
-                out.push_str(&format!("\\u{{{:04X}}}-\\u{{{:04X}}}}}", low, high));
+                out.push_str(&format!("\\u{{{:04X}}}-\\u{{{:04X}}}", low, high));
                 out.push(']');
             } else {
                 out.push('\\');
@@ -170,5 +199,37 @@ mod tests {
         assert!(translate(r"[\p{IsBasicLatin}-[abc]]+").is_none());
         assert!(translate(r"\p{IsNoSuchBlock}").is_none());
         assert!(translate(r"\d{1,3}").is_none());
+    }
+
+    #[test]
+    fn js_dialect_anchors_and_serves_the_same_subset() {
+        let js = translate_to_js(r"\p{IsBasicLatin}+").unwrap();
+        assert_eq!(js, r"^(?:[\u{0000}-\u{007F}]+)$");
+
+        // Every translatable construct the dataset pins is served;
+        // value-level answers are asserted in the JS smoke, which
+        // compiles these through the real JS engine (u flag).
+        for pattern in [
+            r"\P{IsLatin-1Supplement}",
+            r"\p{L}",
+            r"\p{Nd}{1,3}",
+            r"[a-z]*",
+            r"a|b",
+            r"a.c",
+            r"a\.c",
+        ] {
+            let js = translate_to_js(pattern)
+                .unwrap_or_else(|| panic!("{pattern}: translatable construct refused"));
+            assert!(js.starts_with("^(?:") && js.ends_with(")$"));
+        }
+    }
+
+    #[test]
+    fn js_dialect_refuses_the_same_out_of_subset_set() {
+        assert!(translate_to_js(r"\i\c*").is_none());
+        assert!(translate_to_js(r"[\p{IsBasicLatin}-[abc]]+").is_none());
+        assert!(translate_to_js(r"\p{IsNoSuchBlock}").is_none());
+        assert!(translate_to_js(r"\d{1,3}").is_none());
+        assert!(translate_to_js(r"[a[b]").is_none());
     }
 }
