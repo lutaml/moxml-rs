@@ -1,0 +1,86 @@
+# Attach the model-face wasm bundle to GitHub releases, mirroring the
+# leptris-rs release pipeline: the moxml-ts package fetches its pinned
+# bundle from here (scripts/fetch-wasm.sh pins the release on the TS
+# side). Records the size budget on the release body.
+name: Wasm artifacts
+
+permissions:
+  contents: write
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build + attach wasm bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      - name: Build the wasm bundle
+        shell: bash
+        run: |
+          wasm-pack build --target web --out-dir pkg
+          WASM_BYTES=$(wc -c < pkg/moxml_bg.wasm)
+          JS_BYTES=$(wc -c < pkg/moxml.js)
+          {
+            echo "crate commit: ${GITHUB_SHA}"
+            echo "moxml_bg.wasm: ${WASM_BYTES} bytes"
+            echo "moxml.js: ${JS_BYTES} bytes"
+            echo "target: wasm32-unknown-unknown (web + node)"
+          } > pkg/BUILD_INFO.txt
+          echo "WASM_BYTES=${WASM_BYTES}" >> "$GITHUB_ENV"
+          echo "JS_BYTES=${JS_BYTES}" >> "$GITHUB_ENV"
+
+      - name: Drive the conformance dataset through the bundle
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Smoke
+        run: node scripts/wasm-smoke.mjs
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          tar -czf "moxml-wasm-${VERSION}.tgz" -C pkg .
+          echo "ARTIFACT=moxml-wasm-${VERSION}.tgz" >> "$GITHUB_ENV"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" "$ARTIFACT" --clobber
+
+      - name: Record the size budget
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.id')
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RID" --jq '.body' > body.md
+          printf '%s\n' \
+            "" \
+            "## Wasm bundle" \
+            "" \
+            "Attached: \`$ARTIFACT\`" \
+            "" \
+            "| artifact | bytes |" \
+            "|---|---|" \
+            "| moxml_bg.wasm | $WASM_BYTES |" \
+            "| moxml.js (glue) | $JS_BYTES |" \
+            "" \
+            "The pure-logic model faces (builtin lexical, wildcard, entity registry) as a wasm-bindgen bundle — the one model implementation, bound for the TS package. Target wasm32-unknown-unknown (web + node). See BUILD_INFO.txt in the bundle." \
+            >> body.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RID" -F body=@body.md --jq '.id'

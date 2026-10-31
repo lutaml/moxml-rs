@@ -22,3 +22,23 @@ jobs:
       - run: cargo test --all-targets
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Compile the wasm face
+        run: cargo check --target wasm32-unknown-unknown
+      - name: Build the bundle and drive the dataset through it
+        run: |
+          wasm-pack build --target web --out-dir pkg
+          node scripts/wasm-smoke.mjs

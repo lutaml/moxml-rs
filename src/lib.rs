@@ -16,3 +16,6 @@ pub mod entity_registry;
 pub mod lexical;
 pub mod wildcard;
 pub mod xsd_regex;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasmface;
