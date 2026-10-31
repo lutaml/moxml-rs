@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import {
   initSync,
   valid_lexical,
+  translate_regex_js,
   WildcardFace,
   RegistryFace,
 } from "../pkg/moxml.js";
@@ -24,6 +25,33 @@ for (const row of data.cases.builtin_lexical) {
   if (got !== row.valid) {
     fail++;
     console.log("lexical", row.type, JSON.stringify(row.lexical), "got", got, "want", row.valid);
+  }
+}
+
+for (const row of data.cases.xsd_regex_translation) {
+  total++;
+  const js = translate_regex_js(row.pattern);
+  if (row.translatable) {
+    if (js === undefined) {
+      fail++;
+      console.log("regex", row.pattern, "dataset says translatable, got undefined");
+      continue;
+    }
+    let answer;
+    try {
+      answer = new RegExp(js, "u").test(row.value);
+    } catch (e) {
+      fail++;
+      console.log("regex", row.pattern, "JS rejects the translation:", String(e).slice(0, 80));
+      continue;
+    }
+    if (answer !== row.matches) {
+      fail++;
+      console.log("regex", row.pattern, "on", JSON.stringify(row.value), "got", answer, "want", row.matches);
+    }
+  } else if (js !== undefined) {
+    fail++;
+    console.log("regex", row.pattern, "dataset says NOT translatable, got", js);
   }
 }
 

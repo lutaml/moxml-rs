@@ -5,24 +5,32 @@
 //! Cargo.toml; native builds never see it).
 //!
 //! Thin delegation, one committed answer per face: lexical table
-//! ([`valid_lexical`]), wildcard admission/exclusion
-//! ([`WildcardFace`]), entity registry ([`RegistryFace`]). The XSD
-//! regex translator is deliberately absent — the face translates to
-//! the HOST regex dialect, and the JS emission (`^`/`$` anchors, JS
-//! property escapes) is its own translation problem, not a string
-//! re-export of the Rust-regex dialect.
+//! ([`valid_lexical`]), XSD-regex translation to the JS dialect
+//! ([`translate_regex_js`]), wildcard admission/exclusion
+//! ([`WildcardFace`]), entity registry ([`RegistryFace`]).
 
 use wasm_bindgen::prelude::*;
 
 use crate::entity_registry::EntityRegistry;
 use crate::lexical;
 use crate::wildcard::{Exclusion, Namespace, Wildcard};
+use crate::xsd_regex;
 
 /// Whether a lexical value is valid for a built-in type.
 /// Err = the type is not in the table (loud, never a silent answer).
 #[wasm_bindgen]
 pub fn valid_lexical(builtin: &str, value: &str) -> Result<bool, JsError> {
     lexical::valid(builtin, value).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Translates an XSD pattern to the **JavaScript** RegExp dialect —
+/// compile the returned string with the `u` flag and test values
+/// through the JS engine. `undefined` when the pattern uses a
+/// construct outside the translated subset: the engine's answer
+/// then stands.
+#[wasm_bindgen]
+pub fn translate_regex_js(pattern: &str) -> Option<String> {
+    xsd_regex::translate_to_js(pattern)
 }
 
 /// Every built-in type name the table serves.
