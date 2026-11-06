@@ -3,6 +3,7 @@
 //! number, not a stack-overflow risk.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::error::{Error, Result};
 use super::{
@@ -36,7 +37,7 @@ struct Parser<'a> {
     expanded: usize,
     nodes: Vec<Node>,
     /// In-scope namespace bindings: prefix -> stack of URIs (innermost last).
-    scope: HashMap<Option<String>, Vec<String>>,
+    scope: HashMap<Option<String>, Vec<Arc<str>>>,
 }
 
 impl<'a> Parser<'a> {
@@ -458,6 +459,13 @@ impl<'a> Parser<'a> {
         let mut frame: Vec<(Option<String>, String)> = Vec::new();
         let mut plain: Vec<(&str, String)> = Vec::new();
         for (n, v) in raw_attrs {
+            if (n == "xmlns" || n.starts_with("xmlns:"))
+                && frame
+                    .iter()
+                    .any(|(p, _)| p.as_deref() == n.strip_prefix("xmlns:"))
+            {
+                return Err(Error::DuplicateAttribute(n.to_string()));
+            }
             if n == "xmlns" {
                 frame.push((None, v));
             } else if let Some(p) = n.strip_prefix("xmlns:") {
@@ -476,18 +484,21 @@ impl<'a> Parser<'a> {
             }
         }
         for (p, u) in &frame {
-            self.scope.entry(p.clone()).or_default().push(u.clone());
+            self.scope
+                .entry(p.clone())
+                .or_default()
+                .push(Arc::from(u.as_str()));
         }
         let declared: Vec<Option<String>> = frame.iter().map(|(p, _)| p.clone()).collect();
         let scope = &self.scope;
-        let resolve = |prefix: Option<&str>| -> Option<String> {
+        let resolve = |prefix: Option<&str>| -> Option<Arc<str>> {
             let hit = scope
                 .get(&prefix.map(String::from))
                 .and_then(|stack| stack.last());
             match (hit, prefix) {
                 (Some(u), _) if u.is_empty() => None,
-                (Some(u), _) => Some(u.clone()),
-                (None, Some("xml")) => Some(XML_NS.to_string()),
+                (Some(u), _) => Some(Arc::clone(u)),
+                (None, Some("xml")) => Some(Arc::from(XML_NS)),
                 _ => None,
             }
         };
@@ -506,7 +517,7 @@ impl<'a> Parser<'a> {
             return Err(Error::UnboundPrefix(prefix.unwrap_or_default()));
         }
         let mut attributes: Vec<Attribute> = Vec::new();
-        let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
+        let mut seen: HashSet<(String, Option<Arc<str>>)> = HashSet::new();
         for (n, value) in plain {
             let (ap, al) = split(self, n)?;
             let ans = match ap.as_deref() {

@@ -20,6 +20,8 @@
 //! it links a system `libleptris` that a plain `cargo test` here cannot
 //! assume. See `docs/native-document.md`.
 
+use std::sync::Arc;
+
 mod error;
 mod parse;
 mod write;
@@ -83,7 +85,9 @@ pub struct QName {
     pub prefix: Option<String>,
     pub local: String,
     /// Namespace URI; `None` = no namespace.
-    pub namespace: Option<String>,
+    /// Shared between every name bound to the same declaration, so
+    /// memory stays linear in the input however many names use a URI.
+    pub namespace: Option<Arc<str>>,
 }
 
 impl QName {
@@ -101,7 +105,7 @@ impl QName {
         QName {
             prefix: prefix.map(String::from),
             local: local.into(),
-            namespace: Some(uri.into()),
+            namespace: Some(Arc::from(uri)),
         }
     }
 
