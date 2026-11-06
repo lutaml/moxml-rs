@@ -2,7 +2,7 @@
 //! policy. Iterative (no recursion on nesting) so depth is a policy
 //! number, not a stack-overflow risk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::error::{Error, Result};
 use super::{
@@ -23,6 +23,7 @@ pub(super) fn parse(xml: &[u8], policy: &ParserPolicy) -> Result<Document> {
         entities: HashMap::new(),
         expanded: 0,
         nodes: Vec::new(),
+        scope: HashMap::new(),
     };
     p.document()
 }
@@ -34,6 +35,8 @@ struct Parser<'a> {
     entities: HashMap<String, String>,
     expanded: usize,
     nodes: Vec<Node>,
+    /// In-scope namespace bindings: prefix -> stack of URIs (innermost last).
+    scope: HashMap<Option<String>, Vec<String>>,
 }
 
 impl<'a> Parser<'a> {
@@ -328,7 +331,8 @@ impl<'a> Parser<'a> {
         }
         // open elements: (id, raw qualified name, scope frame count)
         let mut open: Vec<(NodeId, String)> = Vec::new();
-        let mut frames: Vec<Vec<(Option<String>, String)>> = Vec::new();
+        // prefixes each open element declared, to unwind `self.scope` on close
+        let mut frames: Vec<Vec<Option<String>>> = Vec::new();
         let mut root: Option<NodeId> = None;
         loop {
             if self.starts("</") {
@@ -345,7 +349,9 @@ impl<'a> Parser<'a> {
                     return self.err("expected '>'");
                 }
                 open.pop();
-                frames.pop();
+                if let Some(f) = frames.pop() {
+                    self.leave_scope(f);
+                }
                 if open.is_empty() {
                     return Ok(root.expect("root set with first element"));
                 }
@@ -374,11 +380,12 @@ impl<'a> Parser<'a> {
                 if open.len() >= self.policy.max_depth {
                     return Err(Error::DepthLimit);
                 }
-                let (id, raw, empty, frame) = self.start_tag(&frames, open.last().map(|o| o.0))?;
+                let (id, raw, empty, frame) = self.start_tag(open.last().map(|o| o.0))?;
                 if root.is_none() {
                     root = Some(id);
                 }
                 if empty {
+                    self.leave_scope(frame);
                     if open.is_empty() {
                         return Ok(id);
                     }
@@ -409,13 +416,13 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses `<name attrs>` / `<name attrs/>`, resolves namespaces,
-    /// appends the element. Returns (id, raw name, empty?, its scope frame).
+    /// appends the element and enters its namespace scope. Returns (id, raw
+    /// name, empty?, prefixes declared, which the caller must `leave_scope`).
     #[allow(clippy::type_complexity)]
     fn start_tag(
         &mut self,
-        frames: &[Vec<(Option<String>, String)>],
         parent: Option<NodeId>,
-    ) -> Result<(NodeId, String, bool, Vec<(Option<String>, String)>)> {
+    ) -> Result<(NodeId, String, bool, Vec<Option<String>>)> {
         self.pos += 1;
         let raw = self.name()?.to_string();
         let mut raw_attrs: Vec<(&'a str, String)> = Vec::new();
@@ -468,15 +475,18 @@ impl<'a> Parser<'a> {
                 plain.push((n, v));
             }
         }
+        for (p, u) in &frame {
+            self.scope.entry(p.clone()).or_default().push(u.clone());
+        }
+        let declared: Vec<Option<String>> = frame.iter().map(|(p, _)| p.clone()).collect();
+        let scope = &self.scope;
         let resolve = |prefix: Option<&str>| -> Option<String> {
-            let hit = frame
-                .iter()
-                .rev()
-                .chain(frames.iter().rev().flat_map(|f| f.iter().rev()))
-                .find(|(p, _)| p.as_deref() == prefix);
+            let hit = scope
+                .get(&prefix.map(String::from))
+                .and_then(|stack| stack.last());
             match (hit, prefix) {
-                (Some((_, u)), _) if u.is_empty() => None,
-                (Some((_, u)), _) => Some(u.clone()),
+                (Some(u), _) if u.is_empty() => None,
+                (Some(u), _) => Some(u.clone()),
                 (None, Some("xml")) => Some(XML_NS.to_string()),
                 _ => None,
             }
@@ -496,6 +506,7 @@ impl<'a> Parser<'a> {
             return Err(Error::UnboundPrefix(prefix.unwrap_or_default()));
         }
         let mut attributes: Vec<Attribute> = Vec::new();
+        let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
         for (n, value) in plain {
             let (ap, al) = split(self, n)?;
             let ans = match ap.as_deref() {
@@ -508,10 +519,7 @@ impl<'a> Parser<'a> {
                     u
                 }
             };
-            if attributes
-                .iter()
-                .any(|a| a.name.local == al && a.name.namespace == ans)
-            {
+            if !seen.insert((al.clone(), ans.clone())) {
                 return Err(Error::DuplicateAttribute(n.to_string()));
             }
             attributes.push(Attribute {
@@ -530,7 +538,7 @@ impl<'a> Parser<'a> {
                 local,
                 namespace,
             },
-            namespaces: frame.clone(),
+            namespaces: frame,
             attributes,
             children: Vec::new(),
             parent,
@@ -540,6 +548,18 @@ impl<'a> Parser<'a> {
                 e.children.push(id);
             }
         }
-        Ok((id, raw, empty, frame))
+        Ok((id, raw, empty, declared))
+    }
+
+    /// Unwinds the bindings an element declared when it closes.
+    fn leave_scope(&mut self, declared: Vec<Option<String>>) {
+        for p in declared.into_iter().rev() {
+            if let Some(stack) = self.scope.get_mut(&p) {
+                stack.pop();
+                if stack.is_empty() {
+                    self.scope.remove(&p);
+                }
+            }
+        }
     }
 }

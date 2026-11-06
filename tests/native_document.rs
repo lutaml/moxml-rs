@@ -363,3 +363,113 @@ fn engine_trait_is_the_seam() {
         "<a/>"
     );
 }
+
+// ---- parser scaling and scoping ---------------------------------------
+
+/// Wall time of `f`, best of three, so a busy machine does not flake the test.
+fn best_of_3<T>(mut f: impl FnMut() -> T) -> std::time::Duration {
+    (0..3)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            drop(f());
+            t.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+/// Quadratic parsing shows as time(4n) / time(n) near 16; linear is near 4.
+/// The ratio is load-independent; the absolute cap (5x the 1 s target, since
+/// these run in debug on shared runners) catches gross regressions. Before the
+/// fix: 40k attributes took 6.9 s and 4k xmlns + 100k children took 8.7 s.
+fn assert_linear(what: &str, make: impl Fn(usize) -> String, n: usize) {
+    let small = make(n);
+    let big = make(4 * n);
+    let t_small = best_of_3(|| Document::parse(small.as_bytes()).unwrap());
+    let t_big = best_of_3(|| Document::parse(big.as_bytes()).unwrap());
+    assert!(
+        t_big.as_secs_f64() < 5.0,
+        "{what}: {t_big:?} for the large input"
+    );
+    assert!(
+        t_big.as_secs_f64() < 9.0 * t_small.as_secs_f64().max(0.005),
+        "{what}: 4x input took {t_big:?} vs {t_small:?} (superlinear)"
+    );
+}
+
+#[test]
+fn forty_thousand_attributes_parse_in_linear_time() {
+    let make = |n: usize| {
+        let mut xml = String::from("<r");
+        for i in 0..n {
+            xml.push_str(&format!(" a{i}=\"v\""));
+        }
+        xml.push_str("/>");
+        xml
+    };
+    assert_linear("attributes", make, 10_000);
+    let doc = Document::parse(make(40_000).as_bytes()).unwrap();
+    assert_eq!(doc.element_rows()[0].attributes.len(), 40_000);
+}
+
+#[test]
+fn thousands_of_namespace_declarations_with_many_children_parse_in_linear_time() {
+    // xmlns count and child count grow together, like the reported input
+    let make = |n: usize| {
+        let mut xml = String::from("<r");
+        for i in 0..n / 25 {
+            xml.push_str(&format!(" xmlns:p{i}=\"urn:{i}\""));
+        }
+        xml.push('>');
+        for _ in 0..n {
+            xml.push_str("<c/>");
+        }
+        xml.push_str("</r>");
+        xml
+    };
+    assert_linear("xmlns + children", make, 25_000);
+    let doc = Document::parse(make(100_000).as_bytes()).unwrap();
+    assert_eq!(doc.element_rows().len(), 100_001);
+    assert_eq!(doc.element_rows()[0].namespaces.len(), 4_000);
+}
+
+#[test]
+fn a_duplicate_attribute_is_still_refused() {
+    let err = Document::parse(br#"<r a="1" b="2" a="3"/>"#).unwrap_err();
+    assert!(matches!(err, Error::DuplicateAttribute(_)), "{err:?}");
+    // same local name under different namespaces is fine; same expanded name is not
+    let ok = br#"<r xmlns:x="urn:x" xmlns:y="urn:y" x:a="1" y:a="2" a="3"/>"#;
+    assert!(Document::parse(ok).is_ok());
+    let dup = br#"<r xmlns:x="urn:x" xmlns:y="urn:x" x:a="1" y:a="2"/>"#;
+    assert!(matches!(
+        Document::parse(dup).unwrap_err(),
+        Error::DuplicateAttribute(_)
+    ));
+}
+
+#[test]
+fn nested_namespace_declarations_shadow_and_unwind() {
+    let xml = br#"<a xmlns="urn:outer" xmlns:p="urn:p1"><b xmlns="urn:inner" xmlns:p="urn:p2"><p:c/></b><p:d/><e xmlns=""><f/></e><g/></a>"#;
+    let doc = Document::parse(xml).unwrap();
+    let ns = |local: &str| {
+        doc.element_rows()
+            .into_iter()
+            .find(|r| r.name.local == local)
+            .unwrap()
+            .name
+            .namespace
+    };
+    assert_eq!(ns("a").as_deref(), Some("urn:outer"));
+    assert_eq!(ns("b").as_deref(), Some("urn:inner"));
+    assert_eq!(ns("c").as_deref(), Some("urn:p2"));
+    assert_eq!(ns("d").as_deref(), Some("urn:p1"));
+    assert_eq!(ns("e"), None);
+    assert_eq!(ns("f"), None);
+    assert_eq!(ns("g").as_deref(), Some("urn:outer"));
+    // a prefix declared on an empty element does not leak to siblings
+    let leak = br#"<a><b xmlns:p="urn:p"/><p:c/></a>"#;
+    assert!(matches!(
+        Document::parse(leak).unwrap_err(),
+        Error::UnboundPrefix(_)
+    ));
+}
