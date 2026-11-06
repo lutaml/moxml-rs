@@ -20,6 +20,7 @@
 //! it links a system `libleptris` that a plain `cargo test` here cannot
 //! assume. See `docs/native-document.md`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 mod error;
@@ -31,6 +32,33 @@ pub use write::SerializeOptions;
 
 /// The XML namespace bound to the reserved `xml` prefix.
 pub const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
+
+/// The namespace of `xmlns` attributes; it can never be declared.
+pub(crate) const XMLNS_NS: &str = "http://www.w3.org/2000/xmlns/";
+
+/// The XML Namespaces rules for one declaration (`xmlns[:prefix]="uri"`).
+pub(crate) fn check_decl(prefix: Option<&str>, uri: &str) -> Result<()> {
+    if let Some(p) = prefix {
+        if !valid_name(p) || p == "xmlns" || uri.is_empty() {
+            return Err(Error::InvalidName(p.into()));
+        }
+        if (p == "xml") != (uri == XML_NS) {
+            return Err(Error::InvalidName(format!(
+                "{p} (the xml prefix and namespace are reserved)"
+            )));
+        }
+    } else if uri == XML_NS {
+        return Err(Error::InvalidContent(
+            "the xml namespace cannot be the default namespace".into(),
+        ));
+    }
+    if uri == XMLNS_NS {
+        return Err(Error::InvalidContent(
+            "the xmlns namespace cannot be declared".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Parser safety policy. The default is the safe one: DOCTYPE is
 /// rejected outright, so neither XXE nor entity-expansion attacks can
@@ -319,9 +347,7 @@ impl Document {
         for d in spec.namespaces {
             self.declare_namespace(id, d.prefix.as_deref(), &d.uri)?;
         }
-        for a in spec.attributes {
-            self.set_attribute(id, a.name, &a.value)?;
-        }
+        self.set_attributes(id, spec.attributes)?;
         for c in spec.content {
             match c {
                 ContentSpec::Text(t) => {
@@ -564,21 +590,47 @@ impl Document {
         Ok(())
     }
 
-    /// Declares `xmlns[:prefix]` on an element (replacing a prior
-    /// declaration of the same prefix).
-    pub fn declare_namespace(&mut self, id: NodeId, prefix: Option<&str>, uri: &str) -> Result<()> {
-        if let Some(p) = prefix {
-            if !valid_name(p) || p == "xmlns" || uri.is_empty() {
-                return Err(Error::InvalidName(p.into()));
-            }
+    /// Sets many attributes at once with the same semantics as calling
+    /// [`Document::set_attribute`] for each in order (a repeated expanded
+    /// name replaces the value in its first position), in linear time.
+    fn set_attributes(&mut self, id: NodeId, attrs: Vec<Attribute>) -> Result<()> {
+        for a in &attrs {
+            check_qname(&a.name)?;
         }
         let e = self.element_mut(id)?;
-        let p = prefix.map(String::from);
-        if let Some(d) = e.namespaces.iter_mut().find(|(q, _)| *q == p) {
-            d.1 = uri.into();
-        } else {
-            e.namespaces.push((p, uri.into()));
+        let mut index: HashMap<(Option<Arc<str>>, String), usize> = e
+            .attributes
+            .iter()
+            .enumerate()
+            .map(|(i, a)| ((a.name.namespace.clone(), a.name.local.clone()), i))
+            .collect();
+        for a in attrs {
+            let key = (a.name.namespace.clone(), a.name.local.clone());
+            match index.get(&key) {
+                Some(&i) => e.attributes[i] = a,
+                None => {
+                    index.insert(key, e.attributes.len());
+                    e.attributes.push(a);
+                }
+            }
         }
+        Ok(())
+    }
+
+    /// Declares `xmlns[:prefix]` on an element. Declaring a prefix the
+    /// element already declares is refused (`DuplicateAttribute`), like
+    /// the parser does; reserved prefixes and namespaces are refused.
+    pub fn declare_namespace(&mut self, id: NodeId, prefix: Option<&str>, uri: &str) -> Result<()> {
+        check_decl(prefix, uri)?;
+        let e = self.element_mut(id)?;
+        let p = prefix.map(String::from);
+        if e.namespaces.iter().any(|(q, _)| *q == p) {
+            return Err(Error::DuplicateAttribute(match prefix {
+                Some(p) => format!("xmlns:{p}"),
+                None => "xmlns".into(),
+            }));
+        }
+        e.namespaces.push((p, uri.into()));
         Ok(())
     }
 }
@@ -595,6 +647,9 @@ pub enum Child {
 
 fn check_qname(n: &QName) -> Result<()> {
     if !valid_name(&n.local) || n.prefix.as_deref().is_some_and(|p| !valid_name(p)) {
+        return Err(Error::InvalidName(n.qualified()));
+    }
+    if n.prefix.as_deref() == Some("xmlns") {
         return Err(Error::InvalidName(n.qualified()));
     }
     if n.prefix.is_some() && n.namespace.is_none() {
