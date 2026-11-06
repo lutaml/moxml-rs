@@ -8,10 +8,9 @@ use std::sync::Arc;
 use super::error::{Error, Result};
 use super::{
     is_name_char, is_name_start, is_xml_char, valid_name, Attribute, Document, ElementData, Node,
-    NodeId, ParserPolicy, QName, XML_NS,
+    NodeId, ParserPolicy, QName, XMLNS_NS, XML_NS,
 };
 
-const XMLNS_NS: &str = "http://www.w3.org/2000/xmlns/";
 const MAX_ENTITY_NESTING: usize = 16;
 
 pub(super) fn parse(xml: &[u8], policy: &ParserPolicy) -> Result<Document> {
@@ -458,15 +457,17 @@ impl<'a> Parser<'a> {
 
         let mut frame: Vec<(Option<String>, String)> = Vec::new();
         let mut plain: Vec<(&str, String)> = Vec::new();
+        let mut declared_here: HashSet<Option<&str>> = HashSet::new();
         for (n, v) in raw_attrs {
             if (n == "xmlns" || n.starts_with("xmlns:"))
-                && frame
-                    .iter()
-                    .any(|(p, _)| p.as_deref() == n.strip_prefix("xmlns:"))
+                && !declared_here.insert(n.strip_prefix("xmlns:"))
             {
                 return Err(Error::DuplicateAttribute(n.to_string()));
             }
             if n == "xmlns" {
+                if v == XML_NS || v == XMLNS_NS {
+                    return self.err("a reserved namespace cannot be the default namespace");
+                }
                 frame.push((None, v));
             } else if let Some(p) = n.strip_prefix("xmlns:") {
                 if !valid_name(p) || p == "xmlns" || v.is_empty() {

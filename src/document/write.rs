@@ -3,7 +3,7 @@
 //! document order, fixed escaping, `<a/>` for empty elements.
 
 use super::error::{Error, Result};
-use super::{is_xml_char, valid_name, Document, Node, NodeId, XML_NS};
+use super::{check_decl, is_xml_char, valid_name, Document, Node, NodeId, XML_NS};
 
 /// Serialization options.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -68,17 +68,64 @@ pub(super) fn serialize(doc: &Document, opts: &SerializeOptions) -> Result<Strin
         out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     }
     let mut scope: Scope = vec![(Some("xml".into()), XML_NS.into())];
-    write_element(doc, doc.root, opts, 0, &mut scope, &mut out)?;
+    // Iterative (explicit stack): tree depth never costs call-stack.
+    let mut tasks = vec![Task::Node {
+        id: doc.root,
+        depth: 0,
+        pad: None,
+    }];
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::Node { id, depth, pad } => {
+                if let Some(n) = pad {
+                    out.push('\n');
+                    out.extend(std::iter::repeat_n(' ', n));
+                }
+                match &doc.nodes[id.0] {
+                    Node::Element(_) => {
+                        write_open(doc, id, opts, depth, &mut scope, &mut out, &mut tasks)?
+                    }
+                    other => write_leaf(other, &mut out)?,
+                }
+            }
+            Task::Close { qn, mark, pad } => {
+                if let Some(n) = pad {
+                    out.push('\n');
+                    out.extend(std::iter::repeat_n(' ', n));
+                }
+                out.push_str("</");
+                out.push_str(&qn);
+                out.push('>');
+                scope.truncate(mark);
+            }
+        }
+    }
     Ok(out)
 }
 
-fn write_element(
+enum Task {
+    Node {
+        id: NodeId,
+        depth: usize,
+        /// Newline plus this many spaces before the node.
+        pad: Option<usize>,
+    },
+    Close {
+        qn: String,
+        mark: usize,
+        pad: Option<usize>,
+    },
+}
+
+/// Writes an element's start tag; queues its children and end tag.
+fn write_open(
     doc: &Document,
     id: NodeId,
     opts: &SerializeOptions,
     depth: usize,
     scope: &mut Scope,
     out: &mut String,
+    tasks: &mut Vec<Task>,
 ) -> Result<()> {
     let Node::Element(e) = &doc.nodes[id.0] else {
         return Err(Error::InvalidNode);
@@ -90,28 +137,41 @@ fn write_element(
     for (p, u) in &decls {
         scope.push((p.clone(), u.clone()));
     }
-    let mut need = |prefix: Option<&str>, uri: Option<&str>, scope: &mut Scope| {
+    let mut need = |prefix: Option<&str>, uri: Option<&str>, scope: &mut Scope| -> Result<()> {
         let want = uri.unwrap_or("");
         let have = lookup(scope, prefix).unwrap_or("");
         if have != want && !(prefix == Some("xml") && want == XML_NS) {
+            // Never emit a document the parser refuses: a second
+            // binding of one prefix on one element is a conflict.
+            if decls.iter().any(|(p, _)| p.as_deref() == prefix) {
+                return Err(Error::InvalidContent(format!(
+                    "prefix '{}' is bound to two different namespaces on one element",
+                    prefix.unwrap_or("")
+                )));
+            }
+            check_decl(prefix, want)?;
             decls.push((prefix.map(String::from), want.to_string()));
             scope.push((prefix.map(String::from), want.to_string()));
         }
+        Ok(())
     };
     if let Some(p) = e.name.prefix.as_deref() {
         if e.name.namespace.is_none() {
             return Err(Error::InvalidName(e.name.qualified()));
         }
-        need(Some(p), e.name.namespace.as_deref(), scope);
+        need(Some(p), e.name.namespace.as_deref(), scope)?;
     } else {
-        need(None, e.name.namespace.as_deref(), scope);
+        need(None, e.name.namespace.as_deref(), scope)?;
     }
     for a in &e.attributes {
         match (&a.name.prefix, &a.name.namespace) {
-            (Some(p), Some(_)) => need(Some(p), a.name.namespace.as_deref(), scope),
+            (Some(p), Some(_)) => need(Some(p), a.name.namespace.as_deref(), scope)?,
             (None, None) => {}
             _ => return Err(Error::InvalidName(a.name.qualified())),
         }
+    }
+    for (p, u) in &decls {
+        check_decl(p.as_deref(), u)?;
     }
     let qn = e.name.qualified();
     if !valid_name(&e.name.local) {
@@ -148,6 +208,7 @@ fn write_element(
     }
     if e.children.is_empty() {
         out.push_str("/>");
+        scope.truncate(mark);
     } else {
         out.push('>');
         let indent = opts.indent.filter(|_| {
@@ -155,35 +216,25 @@ fn write_element(
                 .iter()
                 .all(|c| !matches!(doc.nodes[c.0], Node::Text(_) | Node::CData(_)))
         });
-        for c in &e.children {
-            if let Some(n) = indent {
-                out.push('\n');
-                out.extend(std::iter::repeat_n(' ', n * (depth + 1)));
-            }
-            write_node(doc, *c, opts, depth + 1, scope, out)?;
+        tasks.push(Task::Close {
+            qn,
+            mark,
+            pad: indent.map(|n| n * depth),
+        });
+        for c in e.children.iter().rev() {
+            tasks.push(Task::Node {
+                id: *c,
+                depth: depth + 1,
+                pad: indent.map(|n| n * (depth + 1)),
+            });
         }
-        if let Some(n) = indent {
-            out.push('\n');
-            out.extend(std::iter::repeat_n(' ', n * depth));
-        }
-        out.push_str("</");
-        out.push_str(&qn);
-        out.push('>');
     }
-    scope.truncate(mark);
     Ok(())
 }
 
-fn write_node(
-    doc: &Document,
-    id: NodeId,
-    opts: &SerializeOptions,
-    depth: usize,
-    scope: &mut Scope,
-    out: &mut String,
-) -> Result<()> {
-    match &doc.nodes[id.0] {
-        Node::Element(_) => write_element(doc, id, opts, depth, scope, out)?,
+fn write_leaf(node: &Node, out: &mut String) -> Result<()> {
+    match node {
+        Node::Element(_) => return Err(Error::InvalidNode),
         Node::Text(t) => {
             check_chars(t, "text")?;
             escape_text(t, out);

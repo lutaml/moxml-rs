@@ -522,3 +522,179 @@ fn namespace_uri_is_shared_not_cloned_per_name() {
         ));
     }
 }
+
+// ---- round-3 hardening ---------------------------------------------------
+
+fn ratio_check(what: &str, op: impl Fn(usize), n: usize) {
+    let small = best_of_3(|| op(n));
+    let big = best_of_3(|| op(4 * n));
+    assert!(
+        big.as_secs_f64() < 9.0 * small.as_secs_f64().max(0.005),
+        "{what}: 4x input took {big:?} vs {small:?} (superlinear)"
+    );
+}
+
+/// What the serializer emits must always parse again.
+fn assert_reparses(doc: &Document) {
+    let xml = doc.to_xml().unwrap();
+    Document::parse(xml.as_bytes()).unwrap_or_else(|e| panic!("own output refused: {e:?}: {xml}"));
+}
+
+#[test]
+fn m1_conflicting_prefix_bindings_are_refused_not_emitted() {
+    // two attributes, same prefix, different URIs
+    let spec = ElementSpec::new(QName::local("r"))
+        .attr(QName::ns(Some("p"), "a", "u1"), "1")
+        .attr(QName::ns(Some("p"), "b", "u2"), "2");
+    let err = Document::build(spec).unwrap().to_xml().unwrap_err();
+    assert!(matches!(err, Error::InvalidContent(_)), "{err:?}");
+    // element and attribute
+    let spec = ElementSpec::new(QName::ns(Some("p"), "r", "u1"))
+        .attr(QName::ns(Some("p"), "b", "u2"), "2");
+    assert!(Document::build(spec).unwrap().to_xml().is_err());
+    // explicit declaration vs element needing another URI for the prefix
+    let spec = ElementSpec::new(QName::ns(Some("p"), "r", "u1")).declare(Some("p"), "u2");
+    assert!(Document::build(spec).unwrap().to_xml().is_err());
+    // the same prefix with the same URI, and re-binding in a child, still work
+    let spec = ElementSpec::new(QName::local("r"))
+        .attr(QName::ns(Some("p"), "a", "u1"), "1")
+        .attr(QName::ns(Some("p"), "b", "u1"), "2")
+        .child(ElementSpec::new(QName::ns(Some("p"), "c", "u2")));
+    let doc = Document::build(spec).unwrap();
+    assert_reparses(&doc);
+}
+
+#[test]
+fn m1_reserved_prefixes_and_namespaces_are_refused_at_declare_time() {
+    let spec = |p: Option<&str>, u: &str| ElementSpec::new(QName::local("r")).declare(p, u);
+    assert!(Document::build(spec(Some("xml"), "urn:bad")).is_err());
+    assert!(Document::build(spec(Some("p"), XML_NS)).is_err());
+    assert!(Document::build(spec(Some("p"), "http://www.w3.org/2000/xmlns/")).is_err());
+    assert!(Document::build(spec(Some("xmlns"), "urn:x")).is_err());
+    assert!(Document::build(spec(Some("xml"), XML_NS)).is_ok());
+    // a prefixed name using the xmlns prefix
+    let a = ElementSpec::new(QName::local("r")).attr(QName::ns(Some("xmlns"), "p", "u"), "1");
+    assert!(Document::build(a).is_err());
+    // an attribute that would force a reserved declaration is refused at serialize time
+    let b = ElementSpec::new(QName::local("r")).attr(QName::ns(Some("xml"), "x", "urn:bad"), "1");
+    assert!(Document::build(b).unwrap().to_xml().is_err());
+}
+
+#[test]
+fn m2_many_xmlns_declarations_parse_in_linear_time() {
+    let make = |n: usize| {
+        let mut xml = String::from("<r");
+        for i in 0..n {
+            xml.push_str(&format!(" xmlns:p{i}=\"u\""));
+        }
+        xml.push_str("/>");
+        xml
+    };
+    ratio_check(
+        "xmlns declarations",
+        |n| {
+            Document::parse(make(n).as_bytes()).unwrap();
+        },
+        5_000,
+    );
+    // the refusal is kept
+    assert!(matches!(
+        Document::parse(br#"<r xmlns:p="a" xmlns:q="b" xmlns:p="c"/>"#).unwrap_err(),
+        Error::DuplicateAttribute(_)
+    ));
+}
+
+#[test]
+fn m3_serialization_does_not_depend_on_call_stack_depth() {
+    // the output of an indented deep tree is itself quadratic in size,
+    // so indent is exercised at a smaller depth
+    let deep = |depth: usize, indent: Option<usize>| {
+        let xml: String = "<a>".repeat(depth) + &"</a>".repeat(depth);
+        let policy = ParserPolicy {
+            max_depth: usize::MAX,
+            ..ParserPolicy::default()
+        };
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let doc = Document::parse_with(xml.as_bytes(), &policy).unwrap();
+                let out = doc
+                    .to_xml_with(&SerializeOptions {
+                        xml_declaration: false,
+                        indent,
+                    })
+                    .unwrap();
+                Document::parse_with(out.as_bytes(), &policy).unwrap();
+                out
+            })
+            .unwrap()
+            .join()
+            .expect("to_xml must not overflow a 256 KiB stack")
+    };
+    let plain = deep(100_000, None);
+    // innermost element is `<a/>`; the other 99_999 are `<a>` + `</a>`
+    assert_eq!(plain.len(), 7 * 99_999 + 4);
+    assert_eq!(deep(3_000, Some(1)).lines().count(), 2 * 3_000 - 1);
+}
+
+#[test]
+fn m4_building_many_attributes_is_linear_and_keeps_order_and_replace_semantics() {
+    let build = |n: usize| {
+        let mut s = ElementSpec::new(QName::local("r"));
+        for i in 0..n {
+            s = s.attr(QName::local(&format!("a{i}")), "v");
+        }
+        Document::build(s).unwrap();
+    };
+    ratio_check("build attributes", build, 5_000);
+    // order + duplicate semantics: a repeat replaces in its first position
+    let s = ElementSpec::new(QName::local("r"))
+        .attr(QName::local("b"), "1")
+        .attr(QName::local("a"), "2")
+        .attr(QName::local("b"), "3");
+    assert_eq!(
+        Document::build(s).unwrap().to_xml().unwrap(),
+        r#"<r b="3" a="2"/>"#
+    );
+    // same local name, different namespaces stay distinct
+    let s = ElementSpec::new(QName::local("r"))
+        .attr(QName::ns(Some("x"), "a", "urn:x"), "1")
+        .attr(QName::ns(Some("y"), "a", "urn:y"), "2")
+        .attr(QName::local("a"), "3");
+    assert_eq!(
+        Document::build(s).unwrap().element_rows()[0]
+            .attributes
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn l1_default_namespace_cannot_be_a_reserved_uri() {
+    for uri in [XML_NS, "http://www.w3.org/2000/xmlns/"] {
+        let xml = format!(r#"<a xmlns="{uri}"/>"#);
+        assert!(Document::parse(xml.as_bytes()).is_err(), "{uri}");
+        let spec = ElementSpec::new(QName::local("a")).declare(None, uri);
+        assert!(Document::build(spec).is_err(), "{uri}");
+    }
+    assert!(Document::parse(br#"<a xmlns="urn:ok"/>"#).is_ok());
+}
+
+#[test]
+fn l2_declaring_the_same_prefix_twice_is_refused() {
+    let spec = ElementSpec::new(QName::local("r"))
+        .declare(Some("p"), "urn:a")
+        .declare(Some("p"), "urn:b");
+    assert!(matches!(
+        Document::build(spec).unwrap_err(),
+        Error::DuplicateAttribute(_)
+    ));
+    let mut doc = Document::with_root(QName::local("r")).unwrap();
+    let root = doc.root();
+    doc.declare_namespace(root, None, "urn:d").unwrap();
+    assert!(doc.declare_namespace(root, None, "urn:e").is_err());
+    doc.declare_namespace(root, Some("p"), "urn:a").unwrap();
+    assert!(doc.declare_namespace(root, Some("p"), "urn:a").is_err());
+    // the first declaration is kept
+    assert_eq!(doc.namespace_declarations(root).unwrap().len(), 2);
+}
