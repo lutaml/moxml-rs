@@ -12,7 +12,7 @@ fn q(prefix: Option<&str>, local: &str, uri: Option<&str>) -> QName {
     QName {
         prefix: prefix.map(String::from),
         local: local.into(),
-        namespace: uri.map(String::from),
+        namespace: uri.map(std::sync::Arc::from),
     }
 }
 
@@ -472,4 +472,53 @@ fn nested_namespace_declarations_shadow_and_unwind() {
         Document::parse(leak).unwrap_err(),
         Error::UnboundPrefix(_)
     ));
+}
+
+#[test]
+fn duplicate_namespace_declarations_on_one_element_are_rejected() {
+    for xml in [
+        r#"<a xmlns:p="u" xmlns:p="v"/>"#,
+        r#"<a xmlns:p="u" xmlns:p="u"/>"#,
+        r#"<a xmlns="u" xmlns="v"/>"#,
+        r#"<r><x xmlns:p="b" xmlns:p="c"/></r>"#,
+    ] {
+        assert!(
+            matches!(
+                Document::parse(xml.as_bytes()),
+                Err(Error::DuplicateAttribute(_))
+            ),
+            "{xml}"
+        );
+    }
+    // Same prefix on different elements, and distinct prefixes, stay legal.
+    for xml in [
+        r#"<r xmlns:p="a"><x xmlns:p="b"/></r>"#,
+        r#"<a xmlns:p="u" xmlns:q="u" xmlns="d"/>"#,
+    ] {
+        assert!(Document::parse(xml.as_bytes()).is_ok(), "{xml}");
+    }
+}
+
+#[test]
+fn namespace_uri_is_shared_not_cloned_per_name() {
+    let uri = "x".repeat(10_000);
+    let mut xml = format!(r#"<r xmlns:p="{uri}" p:k="1">"#);
+    for _ in 0..50 {
+        xml.push_str(r#"<p:a p:k="1"/>"#);
+    }
+    xml.push_str("</r>");
+    let doc = Document::parse(xml.as_bytes()).unwrap();
+    let rows = doc.element_rows();
+    let first = rows[1].name.namespace.clone().unwrap();
+    assert_eq!(&*first, uri.as_str());
+    for r in &rows[1..] {
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            r.name.namespace.as_ref().unwrap()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            r.attributes[0].name.namespace.as_ref().unwrap()
+        ));
+    }
 }
