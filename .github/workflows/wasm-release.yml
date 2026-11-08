@@ -24,9 +24,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          version: latest
+      # jetli/wasm-pack-action downloads from the release CDN, which
+      # 504'd through 2026-11-08 (three consecutive runs); crates.io
+      # does not depend on that host.
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
 
       - name: Build the wasm bundle
         shell: bash
