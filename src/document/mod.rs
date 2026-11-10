@@ -182,7 +182,18 @@ pub(crate) struct ElementData {
     pub attributes: Vec<Attribute>,
     pub children: Vec<NodeId>,
     pub parent: Option<NodeId>,
+    /// Lazily built expanded-name -> position index over `attributes`,
+    /// used by `set_attribute` once an element has many attributes.
+    /// `None` means "not built"; every in-place edit of `attributes`
+    /// either keeps it in sync or resets it.
+    pub attr_index: Option<HashMap<AttrKey, usize>>,
 }
+
+pub(crate) type AttrKey = (Option<Arc<str>>, String);
+
+/// Attribute count from which `set_attribute` switches from a scan to
+/// the index.
+const ATTR_INDEX_MIN: usize = 16;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Node {
@@ -447,6 +458,7 @@ impl Document {
                 attributes: vec![],
                 children: vec![],
                 parent: None,
+                attr_index: None,
             })],
             root: NodeId(0),
         })
@@ -537,6 +549,7 @@ impl Document {
             attributes: vec![],
             children: vec![],
             parent: Some(parent),
+            attr_index: None,
         }));
         self.element_mut(parent)?.children.push(id);
         Ok(id)
@@ -576,16 +589,39 @@ impl Document {
     pub fn set_attribute(&mut self, id: NodeId, name: QName, value: &str) -> Result<()> {
         check_qname(&name)?;
         let e = self.element_mut(id)?;
-        let key = (&name.namespace, &name.local);
-        if let Some(a) = e
-            .attributes
-            .iter_mut()
-            .find(|a| (&a.name.namespace, &a.name.local) == key)
-        {
-            a.name = name;
-            a.value = value.into();
-        } else {
-            e.attributes.push(Attribute::new(name, value));
+        if e.attributes.len() < ATTR_INDEX_MIN {
+            let key = (&name.namespace, &name.local);
+            if let Some(a) = e
+                .attributes
+                .iter_mut()
+                .find(|a| (&a.name.namespace, &a.name.local) == key)
+            {
+                a.name = name;
+                a.value = value.into();
+            } else {
+                e.attributes.push(Attribute::new(name, value));
+            }
+            return Ok(());
+        }
+        let attrs = &e.attributes;
+        let index = e.attr_index.get_or_insert_with(|| {
+            attrs
+                .iter()
+                .enumerate()
+                .map(|(i, a)| ((a.name.namespace.clone(), a.name.local.clone()), i))
+                .collect()
+        });
+        let key = (name.namespace.clone(), name.local.clone());
+        match index.get(&key) {
+            Some(&i) => {
+                let a = &mut e.attributes[i];
+                a.name = name;
+                a.value = value.into();
+            }
+            None => {
+                index.insert(key, e.attributes.len());
+                e.attributes.push(Attribute::new(name, value));
+            }
         }
         Ok(())
     }
@@ -614,6 +650,7 @@ impl Document {
                 }
             }
         }
+        e.attr_index = None;
         Ok(())
     }
 
