@@ -169,3 +169,23 @@ impl RegistryFace {
             .should_restore(codepoint, restore_entities, restoration_mode)
     }
 }
+
+/// The strict wildcard admission face (#17): the findings the raw
+/// engine tier misses, over the schema source and the instance.
+/// Returns flat rows [kind, name, namespace, ...] — wasm-bindgen
+/// carries no structs across the boundary cheaply, and the consumer
+/// (the TS conformance runner) only needs the shape.
+#[wasm_bindgen]
+pub fn strict_admission_findings(
+    schema_xml: &str,
+    instance_xml: &str,
+) -> Result<Vec<String>, JsError> {
+    let index = crate::strict_admission::index_schema(schema_xml);
+    let mut rows = Vec::new();
+    for finding in crate::strict_admission::check(&index, instance_xml) {
+        rows.push(finding.kind.to_string());
+        rows.push(finding.name);
+        rows.push(finding.namespace);
+    }
+    Ok(rows)
+}
