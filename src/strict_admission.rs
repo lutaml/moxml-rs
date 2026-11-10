@@ -79,7 +79,8 @@ pub struct SchemaIndex {
     declared_children: Vec<String>,
 }
 
-pub(crate) const XSD_LEXICAL: &str = "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" targetNamespace=\"urn:t\" xmlns=\"urn:t\"><xs:element name=\"doc\"><xs:complexType><xs:sequence><xs:element name=\"n\" type=\"xs:int\"/><xs:element name=\"flag\" type=\"xs:boolean\"/></xs:sequence><xs:attribute name=\"a\" type=\"xs:string\"/><xs:anyAttribute namespace=\"##any\" processContents=\"strict\"/></xs:complexType></xs:element><xs:attribute name=\"ext\" type=\"xs:string\"/></xs:schema>";
+#[cfg(test)]
+const XSD_LEXICAL: &str = "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" targetNamespace=\"urn:t\" xmlns=\"urn:t\"><xs:element name=\"doc\"><xs:complexType><xs:sequence><xs:element name=\"n\" type=\"xs:int\"/><xs:element name=\"flag\" type=\"xs:boolean\"/></xs:sequence><xs:attribute name=\"a\" type=\"xs:string\"/><xs:anyAttribute namespace=\"##any\" processContents=\"strict\"/></xs:complexType></xs:element><xs:attribute name=\"ext\" type=\"xs:string\"/></xs:schema>";
 /// Parse a schema document into the index. Only the pieces the
 /// strict-admission check consumes are kept.
 pub fn index_schema(schema_xml: &str) -> SchemaIndex {
@@ -227,11 +228,7 @@ pub fn check(index: &SchemaIndex, instance_xml: &str) -> Vec<Finding> {
     let mut seen: HashMap<String, ()> = HashMap::new();
     let mut seen_root = false;
 
-    loop {
-        let (resolved_ns, event) = match ns_reader.read_resolved_event() {
-            Ok(pair) => pair,
-            Err(_) => break,
-        };
+    while let Ok((resolved_ns, event)) = ns_reader.read_resolved_event() {
         let event_ns = match resolved_ns {
             quick_xml::name::ResolveResult::Bound(v) => {
                 String::from_utf8_lossy(v.as_ref()).to_string()
@@ -342,8 +339,8 @@ fn attributes_with_ns(
 ) -> Vec<(String, String)> {
     e.attributes()
         .flatten()
-        .filter_map(|a| {
-            Some((String::from_utf8_lossy(a.key.as_ref()).to_string(), String::from_utf8_lossy(&a.value).to_string()))
+        .map(|a| {
+            (String::from_utf8_lossy(a.key.as_ref()).to_string(), String::from_utf8_lossy(&a.value).to_string())
         })
         .collect()
 }
