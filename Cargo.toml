@@ -9,6 +9,7 @@ homepage = "https://github.com/lutaml/moxml"
 
 [dependencies]
 regex = "1"
+quick-xml = "0.36"
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }

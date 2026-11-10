@@ -14,6 +14,7 @@
 
 pub mod entity_registry;
 pub mod lexical;
+pub mod strict_admission;
 pub mod wildcard;
 pub mod xsd_regex;
 
