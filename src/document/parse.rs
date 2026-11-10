@@ -554,6 +554,7 @@ impl<'a> Parser<'a> {
             attributes,
             children: Vec::new(),
             parent,
+            attr_index: None,
         }));
         if let Some(p) = parent {
             if let Some(Node::Element(e)) = self.nodes.get_mut(p.0) {
