@@ -31,10 +31,7 @@ pub struct Finding {
 
 impl Finding {
     pub fn message(&self) -> String {
-        format!(
-            "{} '{}': not declared (strict)",
-            self.kind, self.name
-        )
+        format!("{} '{}': not declared (strict)", self.kind, self.name)
     }
 }
 
@@ -98,24 +95,22 @@ pub fn index_schema(schema_xml: &str) -> SchemaIndex {
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let name =
-                    String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 let attrs = attributes_with_ns(&e, &mut reader);
                 match name.as_str() {
                     "schema" => {
-                        index.target_namespace = attr_value(&attrs, "targetNamespace").unwrap_or_default();
+                        index.target_namespace =
+                            attr_value(&attrs, "targetNamespace").unwrap_or_default();
                         index.attribute_default_qualified =
-                            attr_value(&attrs, "attributeFormDefault").as_deref() == Some("qualified");
+                            attr_value(&attrs, "attributeFormDefault").as_deref()
+                                == Some("qualified");
                         stack.push("schema".into());
                     }
                     "element" | "attribute" => {
                         let is_global = stack.len() == 1; // direct child of xs:schema
                         if is_global {
                             if let Some(n) = attr_value(&attrs, "name") {
-                                let qname = format!(
-                                    "{{{}}}{}",
-                                    index.target_namespace, n
-                                );
+                                let qname = format!("{{{}}}{}", index.target_namespace, n);
                                 index.globals.insert(qname.clone(), ());
                                 if current_global.is_none() {
                                     current_global = Some(qname);
@@ -149,33 +144,26 @@ pub fn index_schema(schema_xml: &str) -> SchemaIndex {
                     }
                     "attributeGroup" | "group" => stack.push(name.to_string()),
                     "sequence" | "choice" | "all" => stack.push(name.to_string()),
-                    "complexContent" | "simpleContent" | "extension"
-                    | "restriction" => stack.push(name.to_string()),
+                    "complexContent" | "simpleContent" | "extension" | "restriction" => {
+                        stack.push(name.to_string())
+                    }
                     _ => stack.push(name.to_string()),
                 }
             }
             Ok(Event::Empty(e)) => {
-                let name =
-                    String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 let attrs = attributes_with_ns(&e, &mut reader);
                 match name.as_str() {
                     "element" | "attribute" if stack.len() == 1 => {
                         if let Some(n) = attr_value(&attrs, "name") {
-                            let qname =
-                                format!("{{{}}}{}", index.target_namespace, n);
+                            let qname = format!("{{{}}}{}", index.target_namespace, n);
                             index.globals.insert(qname, ());
                         }
                     }
                     "attribute" if in_complex_type && type_depth == 1 => {
                         if let Some(n) = attr_value(&attrs, "name") {
-                            let ns = form_namespace(
-                                &attrs,
-                                "attributeFormDefault",
-                                &index,
-                            );
-                            index
-                                .declared_attributes
-                                .push(format!("{{{}}}{}", ns, n));
+                            let ns = form_namespace(&attrs, "attributeFormDefault", &index);
+                            index.declared_attributes.push(format!("{{{}}}{}", ns, n));
                         }
                     }
                     "anyAttribute" | "any" => {
@@ -193,11 +181,8 @@ pub fn index_schema(schema_xml: &str) -> SchemaIndex {
                     }
                     "element" if in_complex_type && type_depth == 1 => {
                         if let Some(n) = attr_value(&attrs, "name") {
-                            let ns =
-                                form_namespace(&attrs, "elementFormDefault", &index);
-                            index
-                                .declared_children
-                                .push(format!("{{{}}}{}", ns, n));
+                            let ns = form_namespace(&attrs, "elementFormDefault", &index);
+                            index.declared_children.push(format!("{{{}}}{}", ns, n));
                         }
                     }
                     _ => {}
@@ -236,25 +221,16 @@ pub fn check(index: &SchemaIndex, instance_xml: &str) -> Vec<Finding> {
             _ => String::new(),
         };
         match event {
-            quick_xml::events::Event::Start(ref e)
-            | quick_xml::events::Event::Empty(ref e) => {
-                let local = String::from_utf8_lossy(e.local_name().as_ref())
-                    .to_string();
+            quick_xml::events::Event::Start(ref e) | quick_xml::events::Event::Empty(ref e) => {
+                let local = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 let qname = format!("{{{}}}{}", event_ns, local);
 
                 if !seen_root {
                     seen_root = true;
-                    if let Some(wildcard) =
-                        index.strict_element_wildcards.first()
-                    {
+                    if let Some(wildcard) = index.strict_element_wildcards.first() {
                         let declared = index.globals.contains_key(&qname)
-                            || index
-                                .declared_children
-                                .contains(&qname);
-                        if wildcard.strict
-                            && wildcard.admits_namespace(&event_ns)
-                            && !declared
-                        {
+                            || index.declared_children.contains(&qname);
+                        if wildcard.strict && wildcard.admits_namespace(&event_ns) && !declared {
                             findings.push(Finding {
                                 kind: "element",
                                 name: local.clone(),
@@ -265,12 +241,8 @@ pub fn check(index: &SchemaIndex, instance_xml: &str) -> Vec<Finding> {
                 }
 
                 for attr in e.attributes().flatten() {
-                    let (resolved, local_name) = ns_reader
-                        .resolve_attribute(attr.key);
-                    let bare = String::from_utf8_lossy(
-                        local_name.as_ref(),
-                    )
-                    .to_string();
+                    let (resolved, local_name) = ns_reader.resolve_attribute(attr.key);
+                    let bare = String::from_utf8_lossy(local_name.as_ref()).to_string();
                     let ns_attr = match resolved {
                         quick_xml::name::ResolveResult::Bound(v) => {
                             String::from_utf8_lossy(v.as_ref()).to_string()
@@ -279,29 +251,18 @@ pub fn check(index: &SchemaIndex, instance_xml: &str) -> Vec<Finding> {
                     };
                     // Namespace declarations are not attributes
                     // (XML Namespaces §3): never admission-checked.
-                    if ns_attr == "http://www.w3.org/2000/xmlns/"
-                        || bare == "xmlns"
-                    {
+                    if ns_attr == "http://www.w3.org/2000/xmlns/" || bare == "xmlns" {
                         continue;
                     }
                     let attr_qname = format!("{{{}}}{}", ns_attr, bare);
-                    if let Some(wildcard) =
-                        index.strict_attribute_wildcards.first()
-                    {
-                        let declared = index
-                            .globals
-                            .contains_key(&attr_qname)
-                            || index
-                                .declared_attributes
-                                .contains(&attr_qname);
+                    if let Some(wildcard) = index.strict_attribute_wildcards.first() {
+                        let declared = index.globals.contains_key(&attr_qname)
+                            || index.declared_attributes.contains(&attr_qname);
                         if wildcard.strict
                             && wildcard.admits_namespace(&ns_attr)
                             && !declared
                             && seen
-                                .insert(
-                                    format!("{}|{}", qname, attr_qname),
-                                    (),
-                                )
+                                .insert(format!("{}|{}", qname, attr_qname), ())
                                 .is_none()
                         {
                             findings.push(Finding {
@@ -321,7 +282,6 @@ pub fn check(index: &SchemaIndex, instance_xml: &str) -> Vec<Finding> {
     findings
 }
 
-
 fn attr_value(attrs: &[(String, String)], name: &str) -> Option<String> {
     attrs
         .iter()
@@ -340,7 +300,10 @@ fn attributes_with_ns(
     e.attributes()
         .flatten()
         .map(|a| {
-            (String::from_utf8_lossy(a.key.as_ref()).to_string(), String::from_utf8_lossy(&a.value).to_string())
+            (
+                String::from_utf8_lossy(a.key.as_ref()).to_string(),
+                String::from_utf8_lossy(&a.value).to_string(),
+            )
         })
         .collect()
 }
@@ -351,10 +314,7 @@ fn wildcard_from(attrs: &[(String, String)], index: &SchemaIndex) -> Wildcard {
         .map(|v| v == "strict")
         .unwrap_or(true);
     let (namespaces, other_only) = if value == "##other" {
-        (
-            vec![index.target_namespace.clone()],
-            true,
-        )
+        (vec![index.target_namespace.clone()], true)
     } else if value == "##any" || value == "##targetNamespace" {
         (
             if value == "##targetNamespace" {
@@ -381,18 +341,12 @@ fn wildcard_from(attrs: &[(String, String)], index: &SchemaIndex) -> Wildcard {
     }
 }
 
-fn form_namespace(
-    attrs: &[(String, String)],
-    default_attr: &str,
-    index: &SchemaIndex,
-) -> String {
+fn form_namespace(attrs: &[(String, String)], default_attr: &str, index: &SchemaIndex) -> String {
     match attr_value(attrs, "form").as_deref() {
         Some("qualified") => index.target_namespace.clone(),
         Some("unqualified") => String::new(),
         _ => {
-            if default_attr == "attributeFormDefault"
-                && index.attribute_default_qualified
-            {
+            if default_attr == "attributeFormDefault" && index.attribute_default_qualified {
                 index.target_namespace.clone()
             } else {
                 String::new()
@@ -404,7 +358,6 @@ fn form_namespace(
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn undeclared_attribute_under_strict_wildcard_is_reported() {
