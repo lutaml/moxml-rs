@@ -7,19 +7,44 @@ use std::sync::Arc;
 
 use super::error::{Error, Result};
 use super::{
-    is_name_char, is_name_start, is_xml_char, valid_name, Attribute, Document, ElementData, Node,
-    NodeId, ParserPolicy, QName, XMLNS_NS, XML_NS,
+    is_name_char, is_name_start, is_xml_char, valid_name, Attribute, AttributeWhitespace, Document,
+    ElementData, Node, NodeId, ParserPolicy, QName, ReferenceDecodingOptions,
+    TextReferenceRecovery, XMLNS_NS, XML_NS,
 };
 
 const MAX_ENTITY_NESTING: usize = 16;
 
 pub(super) fn parse(xml: &[u8], policy: &ParserPolicy) -> Result<Document> {
+    parse_with_text_recovery(xml, policy, TextReferenceRecovery::Strict)
+}
+
+pub(super) fn parse_with_text_recovery(
+    xml: &[u8],
+    policy: &ParserPolicy,
+    recovery: TextReferenceRecovery,
+) -> Result<Document> {
+    parse_with_decoding_options(
+        xml,
+        policy,
+        ReferenceDecodingOptions {
+            text_references: recovery,
+            ..ReferenceDecodingOptions::default()
+        },
+    )
+}
+
+pub(super) fn parse_with_decoding_options(
+    xml: &[u8],
+    policy: &ParserPolicy,
+    decoding: ReferenceDecodingOptions,
+) -> Result<Document> {
     let src = std::str::from_utf8(xml).map_err(|_| Error::Encoding)?;
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     let mut p = Parser {
         src,
         pos: 0,
         policy,
+        decoding,
         entities: HashMap::new(),
         expanded: 0,
         nodes: Vec::new(),
@@ -32,6 +57,7 @@ struct Parser<'a> {
     src: &'a str,
     pos: usize,
     policy: &'a ParserPolicy,
+    decoding: ReferenceDecodingOptions,
     entities: HashMap<String, String>,
     expanded: usize,
     nodes: Vec<Node>,
@@ -264,6 +290,42 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // `after_amp` is in the original UTF-8 source, not just the current
+    // character-data slice. Ox can look through following closing tags while
+    // deciding whether a bare ampersand is an unterminated reference.
+    fn ox_text_reference(&self, after_amp: usize) -> Result<Option<usize>> {
+        let tail = &self.src.as_bytes()[after_amp..];
+        for index in 0..31 {
+            match tail.get(index) {
+                None | Some(0) => return self.err("unterminated reference"),
+                Some(b';') => {
+                    // A semicolon is ASCII, so this ends on a UTF-8 boundary.
+                    let body = std::str::from_utf8(&tail[..index]).map_err(|_| Error::Encoding)?;
+                    if let Some(number) = body.strip_prefix('#') {
+                        let (digits, radix) = if let Some(hex) = number
+                            .strip_prefix('x')
+                            .or_else(|| number.strip_prefix('X'))
+                        {
+                            (hex, 16)
+                        } else {
+                            (number, 10)
+                        };
+                        // Ox preserves malformed digit sequences as literal
+                        // text. Empty/all-digit sequences go through the
+                        // ordinary scalar checker instead of emulating NUL
+                        // truncation or integer overflow.
+                        return Ok(digits.chars().all(|c| c.is_digit(radix)).then_some(index));
+                    }
+                    return Ok((matches!(body, "amp" | "lt" | "gt" | "quot" | "apos")
+                        || self.entities.contains_key(body))
+                    .then_some(index));
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
     /// Expands references in `raw`; `attr` normalizes literal whitespace.
     fn expand(&mut self, raw: &str, attr: bool, depth: usize, out: &mut String) -> Result<()> {
         let mut rest = raw;
@@ -274,18 +336,44 @@ impl<'a> Parser<'a> {
             };
             self.check_chars(lit)?;
             if attr {
-                out.push_str(&lit.replace("\r\n", " ").replace(['\n', '\r', '\t'], " "));
+                if self.decoding.attribute_whitespace == AttributeWhitespace::Preserve {
+                    out.push_str(lit);
+                } else {
+                    out.push_str(&lit.replace("\r\n", " ").replace(['\n', '\r', '\t'], " "));
+                }
             } else {
                 out.push_str(&lit.replace("\r\n", "\n").replace('\r', "\n"));
             }
             let Some(tail) = tail else { return Ok(()) };
-            let Some(semi) = tail.find(';') else {
-                return self.err("unterminated reference");
+            let recover_text = self.decoding.text_references
+                == TextReferenceRecovery::OxLookahead31
+                && !attr
+                && depth == 0;
+            let semi = if recover_text {
+                let after_amp = self.pos + raw.len() - rest.len() + lit.len() + 1;
+                match self.ox_text_reference(after_amp)? {
+                    Some(semi) if semi < tail.len() => semi,
+                    Some(_) => return self.err("reference crosses character-data boundary"),
+                    None => {
+                        out.push('&');
+                        rest = tail;
+                        continue;
+                    }
+                }
+            } else {
+                let Some(semi) = tail.find(';') else {
+                    return self.err("unterminated reference");
+                };
+                semi
             };
             let body = &tail[..semi];
             rest = &tail[semi + 1..];
             if let Some(num) = body.strip_prefix('#') {
-                out.push(self.char_ref(num)?);
+                if recover_text && num.starts_with('X') {
+                    out.push(self.char_ref(&format!("x{}", &num[1..]))?);
+                } else {
+                    out.push(self.char_ref(num)?);
+                }
                 continue;
             }
             match body {
