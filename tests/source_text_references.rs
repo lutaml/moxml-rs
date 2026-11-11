@@ -82,9 +82,11 @@ fn doctype_external_entity_and_resource_errors_keep_their_identity() {
         source(std::str::from_utf8(dtd).unwrap()),
         Err(Error::DoctypeForbidden)
     ));
-    let mut policy = ParserPolicy::default();
-    policy.allow_doctype = true;
-    policy.max_entity_expansion = 2;
+    let mut policy = ParserPolicy {
+        allow_doctype: true,
+        max_entity_expansion: 2,
+        ..ParserPolicy::default()
+    };
     assert!(matches!(
         ReferenceEngine.parse_with_text_recovery(
             dtd,
