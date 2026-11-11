@@ -94,9 +94,68 @@ pub trait Engine {
     fn serialize(&self, doc: &Document, opts: &SerializeOptions) -> Result<String>;
 }
 
+/// Opt-in recovery for malformed ampersands in character data. Attributes,
+/// XML scalar validity, namespace rules and all parser safety limits retain
+/// their ordinary behavior. This is not a general Ox recovery mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextReferenceRecovery {
+    #[default]
+    Strict,
+    /// Match Ox's 31-byte lookahead in the remaining document: an unknown
+    /// semicolon form, or a full window without a semicolon, is literal text.
+    /// EOF/NUL before the window completes is still a malformed reference.
+    /// Invalid scalar numeric references remain errors, including Ox's
+    /// historical NUL truncation and overflow behavior.
+    OxLookahead31,
+}
+
+/// Treatment of literal whitespace inside attribute values. Character
+/// references are decoded separately and are not affected by this option.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AttributeWhitespace {
+    /// XML 1.0 attribute-value normalization (the existing default).
+    #[default]
+    Normalize,
+    /// Preserve literal CR/LF/tab bytes as exposed by the source Ox reader.
+    Preserve,
+}
+
+/// Non-safety decoding choices for the reference reader. Safety remains in
+/// `ParserPolicy`; choosing a source decoding behavior never relaxes it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReferenceDecodingOptions {
+    pub text_references: TextReferenceRecovery,
+    pub attribute_whitespace: AttributeWhitespace,
+}
+
 /// The dependency-free reference backend.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReferenceEngine;
+
+impl ReferenceEngine {
+    /// Parse with explicit lexical decoding options. All existing entrypoints
+    /// retain their defaults; attributes/scalars still undergo XML validation.
+    pub fn parse_with_decoding_options(
+        &self,
+        xml: &[u8],
+        policy: &ParserPolicy,
+        options: ReferenceDecodingOptions,
+    ) -> Result<Document> {
+        parse::parse_with_decoding_options(xml, policy, options)
+    }
+
+    /// Parse with an explicit text-reference recovery mode. Existing parse
+    /// entrypoints remain strict. `policy` is enforced identically in both
+    /// modes; recovery never enables DTDs, external entities or larger limits.
+    pub fn parse_with_text_recovery(
+        &self,
+        xml: &[u8],
+        policy: &ParserPolicy,
+        recovery: TextReferenceRecovery,
+    ) -> Result<Document> {
+        parse::parse_with_text_recovery(xml, policy, recovery)
+    }
+}
 
 impl Engine for ReferenceEngine {
     fn parse(&self, xml: &[u8], policy: &ParserPolicy) -> Result<Document> {
