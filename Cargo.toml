@@ -1,6 +1,6 @@
 [package]
 name = "moxml"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "The moxml XML processing model — Rust implementation (model + harmonization layer over leptris-rs)"
 license = "MIT"
