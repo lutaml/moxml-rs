@@ -122,6 +122,13 @@ pub enum AttributeWhitespace {
 
 /// Non-safety decoding choices for the reference reader. Safety remains in
 /// `ParserPolicy`; choosing a source decoding behavior never relaxes it.
+///
+/// The supported Ox compatibility shapes are explicitly limited to the
+/// 31-byte character-data reference lookahead (`TextReferenceRecovery::OxLookahead31`)
+/// and preservation of literal CR/LF/tab bytes in attribute values
+/// (`AttributeWhitespace::Preserve`). The two options are independent; neither
+/// provides general Ox recovery semantics. Attribute references remain strict,
+/// and entity expansion retains the ordinary size and nesting limits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReferenceDecodingOptions {
     pub text_references: TextReferenceRecovery,
