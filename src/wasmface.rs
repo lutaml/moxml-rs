@@ -189,3 +189,86 @@ pub fn strict_admission_findings(
     }
     Ok(rows)
 }
+
+// ---- the data plane (moxml-rs#2) -------------------------------------
+
+/// The row tuple the batched read crosses as: flat columns per the
+/// data-plane contract — [ordinal, parent_or_null, depth,
+/// qualified_name, namespace_uri_or_null, attr_pairs_flat,
+/// text_content]. Attrs ride the SAME crossing (no per-node
+/// attribute hop); text concatenates the character-data run
+/// (Text + CData; comments and PIs are not character data).
+fn row_to_js(row: crate::document::ElementRow) -> JsValue {
+    let mut text = String::new();
+    for content in &row.content {
+        match content {
+            crate::document::ContentRow::Text(t) => text.push_str(t),
+            crate::document::ContentRow::CData(t) => text.push_str(t),
+            _ => {}
+        }
+    }
+    let arr = js_sys::Array::new();
+    arr.push(&JsValue::from(row.ordinal as u32));
+    arr.push(&match row.parent {
+        Some(p) => JsValue::from(p as u32),
+        None => JsValue::NULL,
+    });
+    arr.push(&JsValue::from(row.depth as u32));
+    arr.push(&JsValue::from(row.name.qualified()));
+    arr.push(&match &row.name.namespace {
+        Some(uri) => JsValue::from(uri.to_string()),
+        None => JsValue::NULL,
+    });
+    let pairs = js_sys::Array::new();
+    for attr in &row.attributes {
+        pairs.push(&JsValue::from(attr.name.qualified()));
+        pairs.push(&JsValue::from(attr.value.clone()));
+    }
+    arr.push(&pairs);
+    arr.push(&JsValue::from(text));
+    arr.into()
+}
+
+/// The data-plane face (moxml-rs#2, docs/data-plane.md): the
+/// batched-first public surface. `element_rows` crosses the whole
+/// tree ONCE; `element_row` is the per-node baseline the boundary
+/// budget (docs/data-plane.md) measures against — the batched read
+/// must beat it rows/µs or it is not batched enough. The engine tier
+/// is the dependency-free ReferenceEngine — the same committed
+/// answers tests/native_document.rs pins.
+#[wasm_bindgen]
+pub struct DocumentFace {
+    inner: crate::document::Document,
+}
+
+#[wasm_bindgen]
+impl DocumentFace {
+    #[wasm_bindgen(constructor)]
+    pub fn parse(xml: &[u8]) -> Result<DocumentFace, JsError> {
+        let inner = crate::document::Document::parse(xml)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(DocumentFace { inner })
+    }
+
+    /// The batched read: the whole tree as rows in ONE crossing.
+    pub fn element_rows(&self) -> Result<Vec<JsValue>, JsError> {
+        Ok(self.inner.element_rows().into_iter().map(row_to_js).collect())
+    }
+
+    /// The per-node baseline: one row per crossing, walked from the
+    /// root every call. Baseline only — consumers use `element_rows`.
+    pub fn element_row(&self, ordinal: u32) -> Result<JsValue, JsError> {
+        let row = self
+            .inner
+            .element_rows()
+            .into_iter()
+            .find(|r| r.ordinal == ordinal as usize)
+            .ok_or_else(|| JsError::new(&format!("no such row: {}", ordinal)))?;
+        Ok(row_to_js(row))
+    }
+
+    /// The serialization contract per the processing model.
+    pub fn to_xml(&self) -> Result<String, JsError> {
+        self.inner.to_xml().map_err(|e| JsError::new(&e.to_string()))
+    }
+}
