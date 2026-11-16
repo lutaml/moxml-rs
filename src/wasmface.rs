@@ -245,14 +245,19 @@ pub struct DocumentFace {
 impl DocumentFace {
     #[wasm_bindgen(constructor)]
     pub fn parse(xml: &[u8]) -> Result<DocumentFace, JsError> {
-        let inner = crate::document::Document::parse(xml)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let inner =
+            crate::document::Document::parse(xml).map_err(|e| JsError::new(&e.to_string()))?;
         Ok(DocumentFace { inner })
     }
 
     /// The batched read: the whole tree as rows in ONE crossing.
     pub fn element_rows(&self) -> Result<Vec<JsValue>, JsError> {
-        Ok(self.inner.element_rows().into_iter().map(row_to_js).collect())
+        Ok(self
+            .inner
+            .element_rows()
+            .into_iter()
+            .map(row_to_js)
+            .collect())
     }
 
     /// The per-node baseline: one row per crossing, walked from the
@@ -269,6 +274,8 @@ impl DocumentFace {
 
     /// The serialization contract per the processing model.
     pub fn to_xml(&self) -> Result<String, JsError> {
-        self.inner.to_xml().map_err(|e| JsError::new(&e.to_string()))
+        self.inner
+            .to_xml()
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 }
