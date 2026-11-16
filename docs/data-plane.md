@@ -39,6 +39,18 @@ the Ruby scoreboard rows as template) and CI records the numbers on
 the wasm release body next to the size budget. A face that cannot
 hold its rows/µs under the per-node baseline is not batched enough.
 
+Status: shipped. The wasm face exposes the data plane
+(`DocumentFace`: parse, `element_rows` — the batched one-crossing
+read, `element_row` — the per-node baseline it must beat, `to_xml`);
+`scripts/rows-conformance.mjs` pins the row tuples (columns, order,
+encoding — namespace inheritance and the whitespace-run text column
+included, the committed reference answers); the bench runs in CI and
+fails the build when the batched read loses to the per-node baseline
+on any shape (measured: 311x / 25x / 56x, worst-case advantage
+25x). The exposure work is over the shipped ReferenceEngine ABI;
+the leptris-backed engine faces (batched reader, budgeted visitor)
+remain leptris/leptris-rs#15's follow-through.
+
 ## What this asks of the engine tier
 
 Tracked on leptris/leptris-rs#15's follow-through: the batched

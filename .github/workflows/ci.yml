@@ -42,3 +42,7 @@ jobs:
         run: |
           wasm-pack build --target web --out-dir pkg
           node scripts/wasm-smoke.mjs
+      - name: Pin the data-plane row contract
+        run: node scripts/rows-conformance.mjs
+      - name: Boundary budget (rows/µs across the wasm boundary)
+        run: node bench/rows_bench.mjs
