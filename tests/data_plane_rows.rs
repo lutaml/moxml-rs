@@ -7,12 +7,18 @@ use moxml::document::Document;
 
 #[test]
 fn data_plane_rows_match_the_canonical_dataset() {
-    let raw = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/data-plane-rows.json"))
-        .expect("the vendored rows dataset is present");
+    let raw = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/data-plane-rows.json"
+    ))
+    .expect("the vendored rows dataset is present");
     let dataset: serde_json::Value = serde_json::from_slice(&raw).expect("valid JSON");
     let cases = dataset["cases"].as_object().expect("cases object");
 
-    assert!(!cases.is_empty(), "an empty dataset can never look like a pass");
+    assert!(
+        !cases.is_empty(),
+        "an empty dataset can never look like a pass"
+    );
 
     for (id, case) in cases {
         let xml = case["xml"].as_str().expect("xml string");
