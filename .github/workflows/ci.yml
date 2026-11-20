@@ -36,6 +36,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Compile as an embedded Rust library without JS exports
+        run: cargo check --target wasm32-unknown-unknown --no-default-features --lib
       - name: Compile the wasm face
         run: cargo check --target wasm32-unknown-unknown
       - name: Build the bundle and drive the dataset through it
