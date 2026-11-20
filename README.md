@@ -15,6 +15,19 @@ The normative contract is the moxml processing model: [`docs/_references/process
 
 Non-goals (v1): quick-xml or DOM/xmldom-style alternate backends (may join later, only behind the same cross-backend conformance gates), JSON/YAML/toml data formats, HTML parsing.
 
+## Embedding in a WASM library
+
+The default `wasm-bindings` feature exports the standalone JavaScript model
+faces. Existing `wasm-pack build` commands keep those exports. A Rust consumer
+that only uses the model/document APIs inside its own WASM library can set
+`default-features = false` on its Moxml dependency to omit the JavaScript face
+and its `wasm-bindgen`/`js-sys` dependencies. Native model APIs are unchanged.
+
+Cargo combines features for the same package revision: another dependency
+enabling `wasm-bindings` on that revision enables its exports for the binary.
+When multiple Moxml revisions are linked, enable the face on at most one to
+avoid duplicate export names.
+
 ## Roadmap
 
 See [docs/architecture.md](docs/architecture.md) for the layered architecture and phased plan (shared across moxml, moxml-rs, moxml-ts).

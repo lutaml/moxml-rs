@@ -19,5 +19,5 @@ pub mod strict_admission;
 pub mod wildcard;
 pub mod xsd_regex;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm-bindings"))]
 pub mod wasmface;
